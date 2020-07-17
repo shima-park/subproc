@@ -36,9 +36,9 @@ func (m *subProcManager) Run(cmd string, opts ...CmdOption) error {
 	}
 
 	m.lock.Lock()
-	defer m.lock.Unlock()
-
 	m.subprocs[cmd] = append(m.subprocs[cmd], m.newSubProc(cmd, opts...))
+	m.lock.Unlock()
+
 	return nil
 }
 
@@ -77,14 +77,19 @@ func (m *subProcManager) ParallelismRun(parallelism int, cmd string, opts ...Cmd
 		return errors.New("SubProcManager is closed")
 	}
 
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
 	size := parallelism
 	curSize := len(m.subprocs[cmd])
 
 	if size > curSize { // 扩容
 		delta := size - curSize
+
 		for i := 0; i < delta; i++ {
 			m.subprocs[cmd] = append(m.subprocs[cmd], m.newSubProc(cmd, opts...))
 		}
+
 	} else if size < curSize { // 缩容
 		var removed []SubProc
 		m.subprocs[cmd], removed = m.subprocs[cmd][:size], m.subprocs[cmd][size:]
@@ -96,9 +101,7 @@ func (m *subProcManager) ParallelismRun(parallelism int, cmd string, opts ...Cmd
 	// reload
 	for i := 0; i < min(curSize, len(m.subprocs[cmd])); i++ {
 		w := m.subprocs[cmd][i]
-
 		w.Stop()
-
 		m.subprocs[cmd][i] = m.newSubProc(cmd, opts...)
 	}
 	return nil
@@ -112,6 +115,9 @@ func min(a, b int) int {
 }
 
 func (m *subProcManager) kill(match func(SubProc) bool) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
 	for cmd, _ := range m.subprocs {
 		for i := len(m.subprocs[cmd]) - 1; i >= 0; i-- {
 			subproc := m.subprocs[cmd][i]
@@ -131,9 +137,6 @@ func (m *subProcManager) remove(cmd string, i int) {
 }
 
 func (m *subProcManager) Kill(ids ...string) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
 	m.kill(func(sp SubProc) bool {
 		for _, id := range ids {
 			if id == sp.ID() {
@@ -145,9 +148,6 @@ func (m *subProcManager) Kill(ids ...string) {
 }
 
 func (m *subProcManager) KillCmd(cmds ...string) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
 	m.kill(func(sp SubProc) bool {
 		for _, cmd := range cmds {
 			if cmd == sp.Cmd() {
@@ -159,9 +159,6 @@ func (m *subProcManager) KillCmd(cmds ...string) {
 }
 
 func (m *subProcManager) Killall() {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
 	m.kill(func(sp SubProc) bool {
 		return true
 	})
