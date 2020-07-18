@@ -26,39 +26,44 @@ func hello() {
 
 func TestSubProcManager(t *testing.T) {
 	m := NewSubProcManager()
+	defer func() {
+		fmt.Println("=====stop")
+		m.Stop()
+		assert.Equal(t, len(m.List()), 0)
+	}()
 
-	m.Run("hello")
-	assert.Equal(t, len(m.List()), 1)
-	assert.Equal(t, len(m.List()["hello"]), 1)
+	err := m.Run("hello")
+	assert.NilError(t, err)
+	assert.Equal(t, len(m.List(WithMatchAll())), 1)
+	assert.Equal(t, len(m.List(WithMatchAll())["hello"]), 1)
 
-	m.ParallelismRun(3, "hello")
-	assert.Equal(t, len(m.List()), 1)
-	assert.Equal(t, len(m.List()["hello"]), 3)
+	err = m.Run("hello")
+	assert.NilError(t, err)
+	assert.Equal(t, len(m.List(WithMatchAll())), 1)
+	assert.Equal(t, len(m.List(WithMatchAll())["hello"]), 2)
 
-	m.ParallelismRun(2, "hello")
-	assert.Equal(t, len(m.List()), 1)
-	assert.Equal(t, len(m.List()["hello"]), 2)
+	err = m.Kill(WithIDs(m.List(WithMatchAll())["hello"][0].ID()))
+	assert.NilError(t, err)
+	assert.Equal(t, len(m.List(WithMatchAll())), 1)
+	assert.Equal(t, len(m.List(WithMatchAll())["hello"]), 1)
 
-	m.Kill(m.List()["hello"][0].ID())
-	assert.Equal(t, len(m.List()), 1)
-	assert.Equal(t, len(m.List()["hello"]), 1)
+	err = m.Run("hello2")
+	assert.NilError(t, err)
+	assert.Equal(t, len(m.List(WithMatchAll())), 2)
+	assert.Equal(t, len(m.List(WithMatchAll())["hello2"]), 1)
 
-	m.ParallelismRun(1, "hello2")
-	assert.Equal(t, len(m.List()), 2)
-	assert.Equal(t, len(m.List()["hello2"]), 1)
+	err = m.Kill(WithCmds("hello2"))
+	assert.NilError(t, err)
+	assert.Equal(t, len(m.List(WithMatchAll())), 1)
 
-	m.KillCmd("hello2")
-	assert.Equal(t, len(m.List()), 1)
+	err = m.Kill(WithMatchAll())
+	assert.NilError(t, err)
+	assert.Equal(t, len(m.List(WithMatchAll())), 0)
 
-	m.Killall()
-	assert.Equal(t, len(m.List()), 0)
-
-	m.ParallelismRun(1, "hello")
-	assert.Equal(t, len(m.List()), 1)
-	assert.Equal(t, len(m.List()["hello"]), 1)
-
-	m.Stop()
-	assert.Equal(t, len(m.List()), 0)
+	err = m.Run("hello")
+	assert.NilError(t, err)
+	assert.Equal(t, len(m.List(WithMatchAll())), 1)
+	assert.Equal(t, len(m.List(WithMatchAll())["hello"]), 1)
 
 	os.Exit(0)
 }

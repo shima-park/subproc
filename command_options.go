@@ -7,12 +7,14 @@ import (
 
 var (
 	defaultCmdOptions = CmdOptions{
-		Stdin:     os.Stdin,
-		Stdout:    os.Stdout,
-		Stderr:    os.Stderr,
-		PreHook:   func() error { return nil },
-		PostHook:  func() error { return nil },
-		FinalHook: func(error) {},
+		Stdin:       os.Stdin,
+		Stdout:      os.Stdout,
+		Stderr:      os.Stderr,
+		StartBefore: func() error { return nil },
+		StartAfter:  func() error { return nil },
+		WaitBefore:  func() error { return nil },
+		WaitAfter:   func() error { return nil },
+		FinalHook:   func(error) {},
 	}
 )
 
@@ -23,12 +25,23 @@ type CmdOptions struct {
 	Stdout               io.Writer
 	Stderr               io.Writer
 	Response             interface{}
-	PreHook              func() error
-	PostHook             func() error
+	StartBefore          func() error
+	StartAfter           func() error
+	WaitBefore           func() error
+	WaitAfter            func() error
 	FinalHook            func(error)
+	ExtraFiles           []*os.File
 }
 
 type CmdOption func(*CmdOptions)
+
+func NewCmdOption(opts ...CmdOption) CmdOptions {
+	var options = defaultCmdOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+	return options
+}
 
 func CommandLineArguments(args ...string) CmdOption {
 	return func(o *CmdOptions) {
@@ -66,20 +79,38 @@ func Response(resp interface{}) CmdOption {
 	}
 }
 
-func PreHook(f func() error) CmdOption {
+func StartBefore(f func() error) CmdOption {
 	return func(o *CmdOptions) {
-		o.PreHook = f
+		o.StartBefore = f
 	}
 }
 
-func PostHook(f func() error) CmdOption {
+func StartAfter(f func() error) CmdOption {
 	return func(o *CmdOptions) {
-		o.PostHook = f
+		o.StartAfter = f
+	}
+}
+
+func WaitBefore(f func() error) CmdOption {
+	return func(o *CmdOptions) {
+		o.WaitBefore = f
+	}
+}
+
+func WaitAfter(f func() error) CmdOption {
+	return func(o *CmdOptions) {
+		o.WaitAfter = f
 	}
 }
 
 func FinalHook(f func(error)) CmdOption {
 	return func(o *CmdOptions) {
 		o.FinalHook = f
+	}
+}
+
+func ExtraFiles(extrafiles ...*os.File) CmdOption {
+	return func(o *CmdOptions) {
+		o.ExtraFiles = extrafiles
 	}
 }

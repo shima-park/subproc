@@ -9,71 +9,99 @@ import (
 )
 
 type Cmd struct {
-	*exec.Cmd
-	options CmdOptions
+	Cmd        *exec.Cmd
+	options    CmdOptions
+	pipeReader *os.File
+	pipeWriter *os.File
+	error      error
 }
 
 func NewCmd(cmdStr string, opts ...CmdOption) *Cmd {
-	var options = defaultCmdOptions
-	for _, opt := range opts {
-		opt(&options)
-	}
-
-	cmd := &Cmd{
-		Cmd:     reexec.Command(append([]string{cmdStr}, options.CommandLineArguments...)...),
-		options: options,
-	}
+	options := NewCmdOption(opts...)
+	cmd := reexec.Command(append([]string{cmdStr}, options.CommandLineArguments...)...)
 	cmd.Env = options.Environment
 	cmd.Stdin = options.Stdin
 	cmd.Stdout = options.Stdout
 	cmd.Stderr = options.Stderr
 
-	return cmd
-}
-
-func (c *Cmd) Run() error {
-	return c.run()
-}
-
-func (c *Cmd) run() (err error) {
 	pipeReader, pipeWriter, err := os.Pipe()
-	if err != nil {
+	cmd.ExtraFiles = append([]*os.File{pipeWriter}, options.ExtraFiles...)
+
+	return &Cmd{
+		Cmd:        cmd,
+		options:    options,
+		pipeReader: pipeReader,
+		pipeWriter: pipeWriter,
+		error:      err,
+	}
+}
+
+func (c *Cmd) Start() error {
+	if c.error != nil {
+		return c.error
+	}
+
+	if err := c.options.StartBefore(); err != nil {
 		return err
 	}
 
-	c.ExtraFiles = []*os.File{
-		pipeWriter,
+	if err := c.Cmd.Start(); err != nil {
+		return err
+	}
+
+	if err := c.options.StartAfter(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Cmd) Wait() (err error) {
+	if c.error != nil {
+		return c.error
 	}
 
 	defer func() {
-		pipeWriter.Close()
-		pipeReader.Close()
+		c.pipeWriter.Close()
+		c.pipeReader.Close()
 
 		if c.options.FinalHook != nil {
 			c.options.FinalHook(err)
 		}
 	}()
 
-	if c.options.PreHook != nil {
-		if err = c.options.PreHook(); err != nil {
-			return
-		}
+	if err = c.options.WaitBefore(); err != nil {
+		return
 	}
 
-	err = c.Cmd.Run()
-	if err != nil {
-		r, resErr := getResult(pipeReader)
-		if resErr != nil {
-			return fmt.Errorf("Command Error: %v, Failed to get result: %v", err, resErr)
-		}
+	err = c.Cmd.Wait()
+	r := getResult(c.pipeReader, c.options.Response)
+	if err != nil || r.Error != "" {
 		if r.Error != "" {
 			return fmt.Errorf("Command Error: %v, Message: %s", err, r.Error)
+		} else {
+			return fmt.Errorf("Command Error: %v", err)
 		}
-		return fmt.Errorf("Command Error: %v", err)
 	}
 
-	if c.options.PostHook != nil {
-		return c.options.PostHook()
+	if err = c.options.WaitAfter(); err != nil {
+		return
 	}
 	return nil
+}
+
+func (c *Cmd) Run() (err error) {
+	if err = c.Start(); err != nil {
+		return
+	}
+
+	return c.Wait()
+}
+
+func (c *Cmd) Stop() error {
+	return c.Cmd.Process.Signal(os.Interrupt)
+}
+
+func (c *Cmd) Kill() error {
+	return c.Cmd.Process.Kill()
 }

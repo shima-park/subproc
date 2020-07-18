@@ -1,13 +1,22 @@
 package subproc
 
 import (
+	"fmt"
+
 	"github.com/docker/docker/pkg/reexec"
 )
 
 var defaultSubProcManager = NewSubProcManager()
 
 func Register(name string, initializer func()) {
-	reexec.Register(name, initializer)
+	reexec.Register(name, func() {
+		defer func() {
+			if r := recover(); r != nil {
+				FailCmd(fmt.Errorf("%s", r))
+			}
+		}()
+		initializer()
+	})
 }
 
 func Init() bool {
@@ -18,24 +27,32 @@ func Run(cmd string, opts ...CmdOption) error {
 	return defaultSubProcManager.Run(cmd, opts...)
 }
 
-func ParallelismRun(parallelism int, cmd string, opts ...CmdOption) error {
-	return defaultSubProcManager.ParallelismRun(parallelism, cmd, opts...)
+func Kill(opts ...MatchOption) error {
+	return defaultSubProcManager.Kill(opts...)
 }
 
-func Kill(ids ...string) {
-	defaultSubProcManager.Kill(ids...)
+func Killall() error {
+	return defaultSubProcManager.Kill(WithMatchAll())
 }
 
-func KillCmd(cmds ...string) {
-	defaultSubProcManager.KillCmd(cmds...)
+func List(opts ...MatchOption) map[string][]SubProc {
+	return defaultSubProcManager.List(opts...)
 }
 
-func Killall() {
-	defaultSubProcManager.Killall()
+func ListAll() map[string][]SubProc {
+	return defaultSubProcManager.List(WithMatchAll())
 }
 
-func List() map[string][]SubProc {
-	return defaultSubProcManager.List()
+func Restart(opts ...MatchOption) error {
+	return defaultSubProcManager.Restart(opts...)
+}
+
+func RestartAll() error {
+	return defaultSubProcManager.Restart(WithMatchAll())
+}
+
+func Wait() {
+	defaultSubProcManager.Wait()
 }
 
 func Stop() {

@@ -5,15 +5,18 @@ import (
 	"sync"
 )
 
+var ErrSubProcManagerIsClosed = errors.New("SubProcManager is closed")
+
 type SubProcManager interface {
 	Run(cmd string, opts ...CmdOption) error
-	ParallelismRun(parallelism int, cmd string, opts ...CmdOption) error
-	Kill(ids ...string)
-	KillCmd(cmds ...string)
-	Killall()
-	List() map[string][]SubProc
+	Kill(...MatchOption) error
+	List(...MatchOption) map[string][]SubProc
+	Restart(...MatchOption) error
+	Wait()
 	Stop()
 }
+
+type handler func(cmd string, i int)
 
 type subProcManager struct {
 	lock     sync.RWMutex
@@ -32,13 +35,13 @@ func NewSubProcManager() SubProcManager {
 
 func (m *subProcManager) Run(cmd string, opts ...CmdOption) error {
 	if m.isStopped() {
-		return errors.New("SubProcManager is closed")
+		return ErrSubProcManagerIsClosed
 	}
 
 	m.lock.Lock()
-	m.subprocs[cmd] = append(m.subprocs[cmd], m.newSubProc(cmd, opts...))
-	m.lock.Unlock()
+	defer m.lock.Unlock()
 
+	m.subprocs[cmd] = append(m.subprocs[cmd], m.newSubProc(cmd, opts...))
 	return nil
 }
 
@@ -50,85 +53,74 @@ func (m *subProcManager) newSubProc(cmd string, opts ...CmdOption) SubProc {
 
 	opts = append(
 		opts,
-		PreHook(func() error {
+		StartBefore(func() error {
 			m.wg.Add(1)
-			if options.PreHook != nil {
-				return options.PreHook()
+			if options.StartBefore != nil {
+				return options.StartBefore()
 			}
 			return nil
 		}),
 		FinalHook(func(err error) {
+			defer m.wg.Done()
 			if options.FinalHook != nil {
 				options.FinalHook(err)
 			}
-			m.wg.Done()
 		}),
 	)
 
 	sp := NewSubProc(cmd, opts...)
 
-	go sp.Run()
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		sp.Run()
+	}()
 
 	return sp
 }
 
-func (m *subProcManager) ParallelismRun(parallelism int, cmd string, opts ...CmdOption) error {
+func (m *subProcManager) iteratorCheckIsClosed(isReadlock bool, handle handler, opts ...MatchOption) error {
 	if m.isStopped() {
-		return errors.New("SubProcManager is closed")
+		return ErrSubProcManagerIsClosed
 	}
 
-	m.lock.Lock()
-	defer m.lock.Unlock()
+	return m.iterator(isReadlock, handle, opts...)
+}
 
-	size := parallelism
-	curSize := len(m.subprocs[cmd])
-
-	if size > curSize { // 扩容
-		delta := size - curSize
-
-		for i := 0; i < delta; i++ {
-			m.subprocs[cmd] = append(m.subprocs[cmd], m.newSubProc(cmd, opts...))
-		}
-
-	} else if size < curSize { // 缩容
-		var removed []SubProc
-		m.subprocs[cmd], removed = m.subprocs[cmd][:size], m.subprocs[cmd][size:]
-		for _, w := range removed {
-			w.Stop()
-		}
+func (m *subProcManager) iterator(isReadlock bool, handle handler, opts ...MatchOption) error {
+	if isReadlock {
+		m.lock.RLock()
+		defer m.lock.RUnlock()
+	} else {
+		m.lock.Lock()
+		defer m.lock.Unlock()
 	}
 
-	// reload
-	for i := 0; i < min(curSize, len(m.subprocs[cmd])); i++ {
-		w := m.subprocs[cmd][i]
-		w.Stop()
-		m.subprocs[cmd][i] = m.newSubProc(cmd, opts...)
+	options := NewMatchOptions(opts...)
+
+	var matched bool
+	for cmd := range m.subprocs {
+		for i := len(m.subprocs[cmd]) - 1; i >= 0; i-- {
+			subproc := m.subprocs[cmd][i]
+			if options.Match(subproc) {
+				if !matched {
+					matched = true
+				}
+				handle(cmd, i)
+			}
+		}
+	}
+	if !matched {
+		return errors.New("no such sub process")
 	}
 	return nil
 }
 
-func min(a, b int) int {
-	if a > b {
-		return b
-	}
-	return a
+func (m *subProcManager) Kill(opts ...MatchOption) error {
+	return m.iteratorCheckIsClosed(false, m.kill, opts...)
 }
 
-func (m *subProcManager) kill(match func(SubProc) bool) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-
-	for cmd, _ := range m.subprocs {
-		for i := len(m.subprocs[cmd]) - 1; i >= 0; i-- {
-			subproc := m.subprocs[cmd][i]
-			if match(subproc) {
-				m.remove(cmd, i)
-			}
-		}
-	}
-}
-
-func (m *subProcManager) remove(cmd string, i int) {
+func (m *subProcManager) kill(cmd string, i int) {
 	m.subprocs[cmd][i].Stop()
 	m.subprocs[cmd] = append(m.subprocs[cmd][:i], m.subprocs[cmd][i+1:]...)
 	if len(m.subprocs[cmd]) == 0 {
@@ -136,42 +128,26 @@ func (m *subProcManager) remove(cmd string, i int) {
 	}
 }
 
-func (m *subProcManager) Kill(ids ...string) {
-	m.kill(func(sp SubProc) bool {
-		for _, id := range ids {
-			if id == sp.ID() {
-				return true
-			}
-		}
-		return false
-	})
-}
-
-func (m *subProcManager) KillCmd(cmds ...string) {
-	m.kill(func(sp SubProc) bool {
-		for _, cmd := range cmds {
-			if cmd == sp.Cmd() {
-				return true
-			}
-		}
-		return false
-	})
-}
-
-func (m *subProcManager) Killall() {
-	m.kill(func(sp SubProc) bool {
-		return true
-	})
-}
-
-func (m *subProcManager) List() map[string][]SubProc {
-	var list = map[string][]SubProc{}
-	m.lock.RLock()
-	for cmd, subprocs := range m.subprocs {
-		list[cmd] = subprocs
-	}
-	m.lock.RUnlock()
+func (m *subProcManager) List(opts ...MatchOption) map[string][]SubProc {
+	list := map[string][]SubProc{}
+	_ = m.iteratorCheckIsClosed(true, func(cmd string, i int) {
+		list[cmd] = append(list[cmd], m.subprocs[cmd][i])
+	}, opts...)
 	return list
+}
+
+func (m *subProcManager) Restart(opts ...MatchOption) error {
+	return m.iteratorCheckIsClosed(false, m.restart, opts...)
+}
+
+func (m *subProcManager) restart(cmd string, i int) {
+	subproc := m.subprocs[cmd][i]
+	subproc.Stop()
+	m.subprocs[cmd][i] = m.newSubProc(subproc.Cmd(), subproc.Options()...)
+}
+
+func (m *subProcManager) Wait() {
+	m.wg.Wait()
 }
 
 func (m *subProcManager) Stop() {
@@ -181,7 +157,7 @@ func (m *subProcManager) Stop() {
 
 	close(m.done)
 
-	m.Killall()
+	_ = m.iterator(false, m.kill, WithMatchAll())
 
 	m.wg.Wait()
 }

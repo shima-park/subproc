@@ -10,14 +10,14 @@ type CmdResult struct {
 	Error string      `json:"error"`
 }
 
-func getResult(pipeReader *os.File) (CmdResult, error) {
+func getResult(pipeReader *os.File, resp interface{}) CmdResult {
 	var r CmdResult
-
+	r.Data = resp
 	if err := json.NewDecoder(pipeReader).Decode(&r); err != nil {
-		return r, err
+		r.Error = err.Error()
 	}
 
-	return r, nil
+	return r
 }
 
 func SuccCmd(data interface{}) {
