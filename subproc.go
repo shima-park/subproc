@@ -19,7 +19,7 @@ type SubProc interface {
 }
 
 type SubProcMetrics struct {
-	CreataTime time.Time
+	CreateTime time.Time
 	StartTime  time.Time
 	ExitTime   time.Time
 	UpTime     time.Duration
@@ -51,7 +51,7 @@ func NewSubProc(cmd string, options ...CmdOption) SubProc {
 		cmd:     cmd,
 		options: options,
 		metrics: SubProcMetrics{
-			CreataTime: time.Now(),
+			CreateTime: time.Now(),
 		},
 		status: SubProcStatusCreating,
 		done:   make(chan struct{}),
